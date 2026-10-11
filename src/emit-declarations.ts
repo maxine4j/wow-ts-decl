@@ -1,5 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import kebabCase from 'lodash/kebabCase.js';
 import { Range, SemVer, satisfies as semverSatisfies } from 'semver';
@@ -271,6 +270,9 @@ function createFunction(func: APIFunction, ns: string | null) {
     ),
   );
 
+  // Add link if we need it
+  // tags.push(createJSDocSeeTag(undefined, undefined, sourceLink));
+
   tags.push(
     ...func.events.map((e) =>
       createJSDocUnknownTag(createIdentifier('event'), [e.name, e.description].filter((pt) => !!pt).join(': ')),
@@ -357,6 +359,7 @@ function createTable(table: APITable) {
       nodes.push(
         createInterfaceDeclaration(undefined, factory.createIdentifier(table.name), undefined, undefined, fields),
       );
+      console.log(printList(nodes, fields));
       return { type: null, nodes };
     });
 }
@@ -378,7 +381,7 @@ function createConstDeclaration(name: string, type: string) {
   );
 }
 
-export function emitDeclarations(api: API, versions: string[], outDir: string = 'dist') {
+export function emitDeclarations(api: API, versions: string[]) {
   const { functions, tables, events } = api;
 
   const partitionByPath = evaluateOutputs(versions);
@@ -392,7 +395,7 @@ export function emitDeclarations(api: API, versions: string[], outDir: string = 
   for (const [projectPath, { functions, tables, events }] of Object.entries(partitionedEntities)) {
     const [rootVersion, category, version] = projectPath.split('/');
     if (!rootVersion || !category || !version) {
-      continue;
+      return;
     }
 
     const importReference = `${category}/${version}`;
@@ -424,6 +427,7 @@ export function emitDeclarations(api: API, versions: string[], outDir: string = 
       const mod = createModuleDeclaration(
         [createToken(SyntaxKind.DeclareKeyword)],
         createIdentifier(ns),
+        // biome-ignore lint/suspicious/noExplicitAny: Not officially supported, but there's no easy way to embed comments within a namespace
         createModuleBlock(scopedNodes as unknown as any),
         NodeFlags.Namespace | NodeFlags.ExportContext | NodeFlags.ContextFlags,
       );
@@ -471,6 +475,7 @@ export function emitDeclarations(api: API, versions: string[], outDir: string = 
       const mod = createModuleDeclaration(
         [createToken(SyntaxKind.DeclareKeyword)],
         createIdentifier(ns),
+        // biome-ignore lint/suspicious/noExplicitAny: Not officially supported, but there's no easy way to embed comments within a namespace
         createModuleBlock(scopedNodes as unknown as any),
         NodeFlags.Namespace | NodeFlags.ExportContext | NodeFlags.ContextFlags,
       );
@@ -522,17 +527,16 @@ export function emitDeclarations(api: API, versions: string[], outDir: string = 
       const mod = createModuleDeclaration(
         [createToken(SyntaxKind.DeclareKeyword)],
         createIdentifier(API.DEFAULT_NAMESPACE),
+        // biome-ignore lint/suspicious/noExplicitAny: Not officially supported, but there's no easy way to embed comments within a namespace
         createModuleBlock(scopedNodes as unknown as any),
         NodeFlags.Namespace | NodeFlags.ExportContext | NodeFlags.ContextFlags,
       );
 
       nodes.push(mod);
     }
-
-    const targetFile = join(outDir, `${projectPath}.d.ts`);
-    mkdirSync(dirname(targetFile), { recursive: true });
-    const content = printList(nodes).replace(/\/\/ __REMOVE__\n/g, '').trim();
-    writeFileSync(targetFile, content);
+    console.log(printList(nodes).trim());
+    // functions are global if === wowapi
+    // tables follow ns always
   }
 
   for (const version of versions) {
@@ -540,16 +544,129 @@ export function emitDeclarations(api: API, versions: string[], outDir: string = 
       continue;
     }
 
-    const indexFile = join(outDir, version, 'index.d.ts');
-    mkdirSync(dirname(indexFile), { recursive: true });
-
-    const rootNodes = [
+    printList([
       ...buildImports(entryNodes[version].values().toArray()),
       createConstDeclaration('Constants', `${API.DEFAULT_NAMESPACE}.Constants`),
       createConstDeclaration('Enum', `${API.DEFAULT_NAMESPACE}.Enum`),
-    ];
-
-    const content = printList(rootNodes).replace(/\/\/ __REMOVE__\n/g, '').trim();
-    writeFileSync(indexFile, content);
+    ]);
   }
+  // console.log(Object.keys(namespacedFunctions));
+  // for (const ns in api) {
+  //   const nodes: Node[] = [];
+  //   const isGlobal = ns === 'core';
+
+  //   for (const funcTitle in api[ns]) {
+  //     const func = api[ns][funcTitle];
+
+  //     if (!func) {
+  //       continue;
+  //     }
+
+  //     const { description, parameters, returns, events, sourceLink, since } = func;
+
+  //     const parameterDeclarations = parameters.map((p) =>
+  //       createParameterDeclaration(
+  //         undefined,
+  //         undefined,
+  //         createIdentifier(p.name),
+  //         p.nilable ? createToken(SyntaxKind.QuestionToken) : undefined,
+  //         mapTypeNode(p.type),
+  //       ),
+  //     );
+
+  //     const returnType = match(returns)
+  //       .with([], () => createKeywordTypeNode(SyntaxKind.VoidKeyword))
+  //       .with([P._], ([p]) => {
+  //         const truthyType = mapTypeNode(p.type);
+  //         const itemType = p.nilable
+  //           ? createUnionTypeNode([truthyType, createLiteralTypeNode(createNull())])
+  //           : truthyType;
+  //         return itemType;
+  //       })
+  //       .otherwise((returns) => {
+  //         return luaFactory.createLuaMultiReturnTypeReferenceNode(
+  //           returns.map((p) => {
+  //             const truthyType = mapTypeNode(p.type);
+  //             const itemType = p.nilable
+  //               ? createUnionTypeNode([truthyType, createLiteralTypeNode(createNull())])
+  //               : truthyType;
+
+  //             return createNamedTupleMember(undefined, createIdentifier(p.name), undefined, itemType);
+  //           }),
+  //         );
+  //       });
+
+  //     const functionDeclaration = factory.createFunctionDeclaration(
+  //       isGlobal ? [createToken(SyntaxKind.DeclareKeyword)] : undefined,
+  //       undefined,
+  //       createIdentifier(func.title),
+  //       undefined,
+  //       parameterDeclarations,
+  //       returnType,
+  //       undefined,
+  //     );
+
+  //     const tags = [];
+
+  //     tags.push(
+  //       ...parameters.map((p) =>
+  //         createJSDocParameterTag(
+  //           undefined,
+  //           createIdentifier(p.name),
+  //           true,
+  //           createJSDocTypeExpression(mapTypeNode(p.type)),
+  //           true,
+  //           p.description,
+  //         ),
+  //       ),
+  //     );
+
+  //     tags.push(
+  //       ...returns.map((p) =>
+  //         createJSDocReturnTag(
+  //           createIdentifier('returns'),
+  //           createJSDocTypeExpression(mapTypeNode(p.type)),
+  //           [p.name, p.description].filter((pt) => !!pt).join(': '),
+  //         ),
+  //       ),
+  //     );
+
+  //     tags.push(createJSDocSeeTag(undefined, undefined, sourceLink));
+
+  //     tags.push(
+  //       ...events.map((e) =>
+  //         createJSDocUnknownTag(createIdentifier('event'), [e.name, e.description].filter((pt) => !!pt).join(': ')),
+  //       ),
+  //     );
+
+  //     if (since) {
+  //       tags.push(createJSDocUnknownTag(createIdentifier('since'), since));
+  //     }
+
+  //     const comment = createJSDocComment(description ? `${description}\n` : undefined, tags);
+
+  //     nodes.push(addSyntheticLeadingComment(comment, SyntaxKind.SingleLineCommentTrivia, '__REMOVE__', true));
+  //     nodes.push(functionDeclaration);
+  //   }
+
+  //   const output = match(isGlobal)
+  //     .with(true, () => nodes)
+  //     .with(false, () => [
+  //       createModuleDeclaration(
+  //         [createToken(SyntaxKind.DeclareKeyword)],
+  //         createIdentifier(ns),
+  //         // biome-ignore lint/suspicious/noExplicitAny: Not officially supported, but there's no easy way to embed comments within a namespace
+  //         createModuleBlock(nodes as unknown as any),
+  //         NodeFlags.Namespace | NodeFlags.ExportContext | NodeFlags.ContextFlags,
+  //       ),
+  //     ])
+  //     .exhaustive();
+
+  //   if (!existsSync(outDir)) {
+  //     mkdirSync(outDir);
+  //   }
+
+  //   // Emit, flush __REMOVE__ and run biome to format
+  //   writeFileSync(join(outDir, `${kebabCase(ns)}.d.ts`), printList(output));
+  // }
 }
