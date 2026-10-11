@@ -205,21 +205,73 @@ function buildImports(entryNodes: string[]) {
 }
 
 function createFunction(func: APIFunction, ns: string | null) {
-  const parameterDeclarations = func.parameters.map((p) =>
-    createParameterDeclaration(
+  // Find the index of the last required (non-nilable) parameter.
+  // Any nilable parameter occurring BEFORE this index cannot use `?`
+  // and must instead be typed as `type | undefined` (or `type | null | undefined`).
+  let lastRequiredIndex = -1;
+  for (let i = func.parameters.length - 1; i >= 0; i--) {
+    if (!func?.parameters?.[i]?.nilable) {
+      lastRequiredIndex = i;
+      break;
+    }
+  }
+
+  const parameterDeclarations = func.parameters.map((p, index) => {
+    const isPrecedingRequired = index < lastRequiredIndex;
+    const baseType = mapTypeNode(p.type);
+
+    if (p.nilable) {
+      if (isPrecedingRequired) {
+        // Required position in signature, but nilable in Lua:
+        // x: number | null | undefined
+        const unionType = createUnionTypeNode([
+          baseType,
+          createLiteralTypeNode(createNull()),
+          createKeywordTypeNode(SyntaxKind.UndefinedKeyword),
+        ]);
+
+        return createParameterDeclaration(
+          undefined,
+          undefined,
+          createIdentifier(p.name),
+          undefined, // NO questionToken
+          unionType,
+        );
+      }
+
+      // Safe trailing optional parameter:
+      // x?: number | null
+      const unionType = createUnionTypeNode([
+        baseType,
+        createLiteralTypeNode(createNull()),
+      ]);
+
+      return createParameterDeclaration(
+        undefined,
+        undefined,
+        createIdentifier(p.name),
+        createToken(SyntaxKind.QuestionToken),
+        unionType,
+      );
+    }
+
+    // Standard required parameter
+    return createParameterDeclaration(
       undefined,
       undefined,
       createIdentifier(p.name),
-      p.nilable ? createToken(SyntaxKind.QuestionToken) : undefined,
-      mapTypeNode(p.type),
-    ),
-  );
+      undefined,
+      baseType,
+    );
+  });
 
   const returnType = match(func.returns)
     .with([], () => createKeywordTypeNode(SyntaxKind.VoidKeyword))
     .with([P._], ([p]) => {
       const truthyType = mapTypeNode(p.type);
-      const itemType = p.nilable ? createUnionTypeNode([truthyType, createLiteralTypeNode(createNull())]) : truthyType;
+      const itemType = p.nilable
+        ? createUnionTypeNode([truthyType, createLiteralTypeNode(createNull())])
+        : truthyType;
       return itemType;
     })
     .otherwise((returns) => {
@@ -269,9 +321,6 @@ function createFunction(func: APIFunction, ns: string | null) {
       ),
     ),
   );
-
-  // Add link if we need it
-  // tags.push(createJSDocSeeTag(undefined, undefined, sourceLink));
 
   tags.push(
     ...func.events.map((e) =>
