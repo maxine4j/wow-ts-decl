@@ -346,10 +346,21 @@ function isBinaryExpression(v: { type: string }): v is luaparse.BinaryExpression
   return v.type === 'BinaryExpression';
 }
 
-function toLiteral(value: { type: string }): string | number | boolean {
+function toLiteral(value: { type: string }): string | number | boolean | undefined {
   return match(value)
-    .with(P.when(isStringLiteral), (v) => v.value)
+    .with(P.when(isStringLiteral), (v) => {
+      if (typeof v.value === 'string') return v.value;
+      if (v.raw) {
+        try {
+          return JSON.parse(v.raw);
+        } catch {
+          return v.raw.replace(/^['"]|['"]$/g, '');
+        }
+      }
+      return undefined;
+    })
     .with(P.when(isNumericLiteral), (v) => v.value)
+    .with(P.when(isBooleanLiteral), (v) => v.value)
     .with(P.when(isUnaryExpression), (v) => {
       const sign = v.operator === '-' ? -1 : 1;
 
@@ -378,9 +389,13 @@ function toLiteral(value: { type: string }): string | number | boolean {
         return `${left} ${v.operator} ${right}`;
       }
 
-      return left + sign * right;
+      if (typeof left === 'number' && typeof right === 'number') {
+        return left + sign * right;
+      }
+
+      return undefined;
     })
-    .otherwise(() => 0);
+    .otherwise(() => undefined);
 }
 
 export function toVariableSignature(parentType: string) {
