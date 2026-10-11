@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, join, resolve } from 'node:path';
 
 import luaparse from 'luaparse';
-import { SemVer, valid } from 'semver';
+import { SemVer, valid, coerce } from 'semver';
 import yargs from 'yargs';
 
 import { API, APIEvent, APIFunction, APITable } from '#@/api.js';
@@ -14,11 +14,11 @@ import type { FileAPIDocumentation } from '#@/types.js';
 
 const argv = await yargs(process.argv.slice(2))
   .scriptName(basename(import.meta.filename))
-  .command('$0 [semver..]', '')
+  .command('$0 [targets..]', '')
   .demandCommand()
-  .positional('semver', {
-    describe: 'The (semver) version tag from which to scrape the API',
-    default: ['1.15.4'],
+  .positional('targets', {
+    describe: 'Branches (e.g. live, classic) or SemVer tags to scrape',
+    default: ['live'],
     type: 'string',
     array: true,
   })
@@ -40,40 +40,71 @@ const argv = await yargs(process.argv.slice(2))
   })
   .help().argv;
 
-const { semver, cacheDir, outDir, repository } = argv;
+const { targets, cacheDir, outDir, repository } = argv;
 
 if (!existsSync(cacheDir)) {
-  mkdirSync(cacheDir);
+  mkdirSync(cacheDir, { recursive: true });
+}
+if (!existsSync(outDir)) {
+  mkdirSync(outDir, { recursive: true });
 }
 
 const tmpPath = resolve(process.cwd(), cacheDir);
 const repositoryDirectory = resolve(tmpPath, basename(repository));
 
+// 1. Initialize bare-bones repo with sparse checkout enabled
 if (!existsSync(repositoryDirectory)) {
-  spawnSync('git', ['clone', repository], { cwd: tmpPath, stdio: 'inherit' });
+  mkdirSync(repositoryDirectory, { recursive: true });
+  spawnSync('git', ['init'], { cwd: repositoryDirectory, stdio: 'ignore' });
+  spawnSync('git', ['remote', 'add', 'origin', repository], { cwd: repositoryDirectory, stdio: 'ignore' });
+
+  // Only check out the documentation folder
+  spawnSync('git', ['sparse-checkout', 'init', '--cone'], { cwd: repositoryDirectory, stdio: 'ignore' });
+  spawnSync(
+    'git',
+    ['sparse-checkout', 'set', 'Interface/AddOns/Blizzard_APIDocumentationGenerated'],
+    { cwd: repositoryDirectory, stdio: 'ignore' }
+  );
 }
 
-const validVersions = semver.filter((v) => valid(v));
+console.info('Scraping:', targets.join(', '));
 
-console.info('Scraping:', validVersions.join(', '));
+for (const target of targets) {
+  // 2. Fetch ONLY the single target commit without history or other refs
+  // Works seamlessly whether target is a branch ('live', 'classic') or tag ('1.15.4')
+  const fetchRes = spawnSync(
+    'git',
+    ['fetch', '--depth=1', '--filter=blob:none', 'origin', target],
+    { cwd: repositoryDirectory, stdio: 'inherit' }
+  );
 
-for (const version of validVersions) {
-  spawnSync('git', ['checkout', version], { cwd: repositoryDirectory, stdio: 'inherit' });
+  if (fetchRes.status !== 0) {
+    console.error(`Failed to fetch target: ${target}`);
+    continue;
+  }
+
+  // 3. Checkout FETCH_HEAD (only downloads blobs inside the sparse-checkout path)
+  spawnSync('git', ['checkout', '--force', 'FETCH_HEAD'], { cwd: repositoryDirectory, stdio: 'inherit' });
 
   const documentationPath = join(repositoryDirectory, 'Interface', 'AddOns', 'Blizzard_APIDocumentationGenerated');
 
-  const files = readdirSync(documentationPath).filter((file) => file.endsWith('.lua'));
+  if (!existsSync(documentationPath)) {
+    console.warn(`Documentation directory not found for ${target}`);
+    continue;
+  }
 
+  const files = readdirSync(documentationPath).filter((file) => file.endsWith('.lua'));
   const api = new API();
 
+  // Handle version conversion whether it's semver or a named track like 'live'
+  const resolvedVersion = valid(target) ? new SemVer(target) : (coerce(target) ?? new SemVer('0.0.0'));
+
   for (const file of files) {
-    const fileContents = readFileSync(join(documentationPath, file)).toString();
+    const fileContents = readFileSync(join(documentationPath, file), 'utf-8');
     const ast = luaparse.parse(fileContents);
 
     const definitionTable = ast.body.find((node) => node.type === 'LocalStatement');
-    if (!definitionTable) {
-      continue;
-    }
+    if (!definitionTable) continue;
 
     const [documentationTable] = definitionTable.init;
     if (documentationTable?.type !== 'TableConstructorExpression') {
@@ -96,20 +127,20 @@ for (const version of validVersions) {
       console.info('Parsed', name);
     }
 
-    for (const func of functions.map((f) => new APIFunction({ ...f, version: new SemVer(version), ns }))) {
+    for (const func of functions.map((f) => new APIFunction({ ...f, version: resolvedVersion, ns }))) {
       api.addFunction(func);
     }
 
-    for (const event of events.map((e) => new APIEvent({ ...e, version: new SemVer(version), ns }))) {
+    for (const event of events.map((e) => new APIEvent({ ...e, version: resolvedVersion, ns }))) {
       api.addEvent(event);
     }
 
-    for (const table of tables.map((e) => new APITable({ ...e, version: new SemVer(version), ns }))) {
+    for (const table of tables.map((e) => new APITable({ ...e, version: resolvedVersion, ns }))) {
       api.addTable(table);
     }
   }
 
-  const output = resolve(outDir, `wow-ui-source-${version}.json`);
+  const output = resolve(outDir, `wow-ui-source-${target}.json`);
   writeFileSync(output, api.serialize());
 }
 
