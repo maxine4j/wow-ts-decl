@@ -211,7 +211,14 @@ export function toFunction(func: FunctionSignature, field: luaparse.TableKeyStri
     case isDocumentation(field): {
       func.description = field.value.fields
         .filter(isTableValue)
-        .map((v) => JSON.parse(v.value.raw))
+        .map((v) => {
+          try {
+            return JSON.parse(v.value.raw)
+          } catch (error) {
+            console.warn("Failed to JSON parse raw table field")
+            return "Unknown - parsing error"
+          }
+        })
         .join('\n');
       break;
     }
