@@ -67,7 +67,7 @@ export class WikiScraper {
 
     if (isCloudflareBlockedNotice(html)) {
       delete this.cachedFiles[resourcePath];
-      rmSync(localFileURL.pathname);
+      rmSync(localFileURL.pathname, { force: true });
       throw new Error('Blocked');
     }
 
