@@ -282,7 +282,7 @@ function createFunction(func: APIFunction, ns: string | null) {
             ? createUnionTypeNode([truthyType, createLiteralTypeNode(createNull())])
             : truthyType;
 
-          return createNamedTupleMember(undefined, createIdentifier(p.name), undefined, itemType);
+          return itemType;
         }),
       );
     });
